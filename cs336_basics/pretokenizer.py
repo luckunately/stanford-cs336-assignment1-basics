@@ -13,14 +13,33 @@ def revert_regex_tokenize(tokens: list[int], split_special_token: bytes = b'<|en
             chars.append(bytes([token]))  # Convert ASCII value back to character
     return b''.join(chars)
 
-def regex_tokenize(text: bytes, split_token: bytes, split_special_token: bytes = b'<|endoftext|>') -> list[int]:
+def regex_tokenize(text: bytes, split_special_token: bytes = b'<|endoftext|>') -> list[int]:
+    """
+    Tokenizes the input bytes using a regex-based approach, splitting on a special token.
+
+    Args:
+        text (bytes): The input text to tokenize, as a bytes object.
+        split_special_token (bytes, optional): The special token used to split the text. 
+            Defaults to b'<|endoftext|>'.
+
+    Returns:
+        list[int]: A list of integer tokens. Each token is the UTF-8 value of a character 
+            from the regex-matched substrings, with the special token represented by 256.
+            The special token is appended after each split part, except possibly at the end 
+            if the input does not end with the special token.
+
+    Notes:
+        - The function splits the input bytes on the special token, then applies a regex 
+          to each part to extract tokens.
+        - Each regex-matched substring is converted to a sequence of UTF-8 integer values.
+        - The special token (represented by 256) is appended after each part.
+        - If the input does not end with the special token, the final 256 is removed.
+    """
     # split the text by the split_special_token first
     text_parts = text.split(split_special_token)
     
     PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
     pattern = re.compile(PAT)
-    
-    list_tokens = []
 
     def process_part(part):
         tokens = []
@@ -34,7 +53,7 @@ def regex_tokenize(text: bytes, split_token: bytes, split_special_token: bytes =
     # Use ThreadPoolExecutor for IO-bound (decoding) or ProcessPoolExecutor for CPU-bound (regex)
     with concurrent.futures.ThreadPoolExecutor() as executor:
         results = list(executor.map(process_part, text_parts))
-
+    
     # Flatten the list of lists
     list_tokens = [item for sublist in results for item in sublist]
     
@@ -45,9 +64,31 @@ def regex_tokenize(text: bytes, split_token: bytes, split_special_token: bytes =
     # flatten the list and convert to int
     return list_tokens
 
-def pretokenize(file: BinaryIO, num_processes: int, split_token: bytes, desired_num_chunks: int = 32) -> list[int]:
+def tokenize_chunk(file: str, split_special_token: bytes, start_end: tuple[int, int]) -> list[int]:
+    start, end = start_end
+    with open(file, "rb") as f:
+        f.seek(start)
+        chunk = f.read(end - start)
+        return regex_tokenize(chunk, split_special_token)
+    
+def pre_tokenize(file: str, num_processes: int = 4, desired_num_chunks: int = 32) -> list[int]:
     split_special_token = b'<|endoftext|>'
-    return find_chunk_boundaries(file, desired_num_chunks, split_special_token)
+
+    # Find chunk boundaries
+    with open(file, "rb") as f:
+        boundaries = find_chunk_boundaries(f, desired_num_chunks, split_special_token)
+    
+    # Tokenize each chunk in parallel
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_processes) as executor:
+        length = len(boundaries) - 1
+        files = [file] * length
+        split_tokens = [split_special_token] * length
+        results = list(executor.map(tokenize_chunk, files, split_tokens, 
+                                    [(boundaries[i], boundaries[i+1]) for i in range(length)]))
+
+    # Flatten the list of lists
+    return [item for sublist in results for item in sublist]
 
 def find_chunk_boundaries(
     file: BinaryIO,
