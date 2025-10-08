@@ -9,6 +9,8 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
+from cs336_basics import bpe_tokenizer
+
 
 def run_linear(
     d_in: int,
@@ -287,7 +289,8 @@ def run_transformer_lm(
     weights: dict[str, Tensor],
     in_indices: Int[Tensor, " batch_size sequence_length"],
 ) -> Float[Tensor, " batch_size sequence_length vocab_size"]:
-    """Given the weights of a Transformer language model and input indices,
+    """
+    Given the weights of a Transformer language model and input indices,
     return the output of running a forward pass on the input indices.
 
     This function should use RoPE.
@@ -300,7 +303,7 @@ def run_transformer_lm(
         num_heads (int): Number of heads to use in multi-headed attention. `d_model` must be
             evenly divisible by `num_heads`.
         d_ff (int): Dimensionality of the feed-forward inner layer (section 3.3).
-        rope_theta (float): The RoPE $\Theta$ parameter.
+        rope_theta (float): The RoPE $Theta$ parameter.
         weights (dict[str, Tensor]):
             State dict of our reference implementation. {num_layers} refers to an
             integer between `0` and `num_layers - 1` (the layer index).
@@ -589,4 +592,12 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    # You can add additional named arguments to this function if you want,
+    # but the autograder will only pass the three specified arguments.
+    # You can also modify the default values of these arguments.
+    desired_num_chunks: int = 32
+    num_processes: int = 4
+    special_split_token: bytes = b'<|endoftext|>'
+    special_encoding = 256  # Assign ID 256 to the special token
+
+    return bpe_tokenizer.bpe_tokenize(input_path, vocab_size, special_tokens, num_processes=num_processes, desired_num_chunks=desired_num_chunks)

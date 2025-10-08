@@ -70,20 +70,18 @@ def tokenize_chunk(file: str, split_special_token: bytes, start_end: tuple[int, 
         f.seek(start)
         chunk = f.read(end - start)
         return regex_tokenize(chunk, split_special_token)
-    
-def pre_tokenize(file: str, num_processes: int = 4, desired_num_chunks: int = 32) -> list[int]:
-    split_special_token = b'<|endoftext|>'
 
+def pre_tokenize(file: str | os.PathLike, num_processes: int = 4, desired_num_chunks: int = 32, special_split_token : bytes = b'<|endoftext|>') -> list[int]:
     # Find chunk boundaries
     with open(file, "rb") as f:
-        boundaries = find_chunk_boundaries(f, desired_num_chunks, split_special_token)
+        boundaries = find_chunk_boundaries(f, desired_num_chunks, special_split_token)
     
     # Tokenize each chunk in parallel
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_processes) as executor:
         length = len(boundaries) - 1
         files = [file] * length
-        split_tokens = [split_special_token] * length
+        split_tokens = [special_split_token] * length
         results = list(executor.map(tokenize_chunk, files, split_tokens, 
                                     [(boundaries[i], boundaries[i+1]) for i in range(length)]))
 
