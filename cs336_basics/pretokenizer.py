@@ -3,40 +3,64 @@ from typing import BinaryIO
 import multiprocessing
 import concurrent.futures
 import regex as re
+from cs336_basics.constants import UNICODE_MAX
 
-def revert_regex_tokenize(tokens: list[int], split_special_token: bytes = b'<|endoftext|>') -> bytes:
+def revert_regex_tokenize(tokens: list[int], special_tokens: list[str] = None) -> bytes:
+    """Revert tokens back to bytes, supporting multiple special tokens"""
+    if special_tokens is None:
+        special_tokens = ['<|endoftext|>']
+    
+    # Create mapping from token IDs to special tokens
+    special_token_map = {}
+    for i, token in enumerate(special_tokens):
+        special_token_map[256 + i] = token.encode('utf-8')
+    
     chars = []
     for token in tokens:
-        if token == 256:  # special token
-            chars.append(split_special_token)
+        if token in special_token_map:
+            chars.append(special_token_map[token])
         else:
             chars.append(bytes([token]))  # Convert ASCII value back to character
     return b''.join(chars)
 
-def regex_tokenize(text: bytes, split_special_token: bytes = b'<|endoftext|>') -> list[int]:
+def regex_tokenize(text: bytes, special_tokens: list[str], special_token_id: int = UNICODE_MAX) -> list[list[int]]:
     """
-    Tokenizes the input bytes using a regex-based approach, splitting on a special token.
+    Tokenizes the input bytes using a regex-based approach, splitting on special tokens.
 
     Args:
         text (bytes): The input text to tokenize, as a bytes object.
-        split_special_token (bytes, optional): The special token used to split the text. 
-            Defaults to b'<|endoftext|>'.
+        special_tokens (list[str], optional): List of special tokens used to split the text. 
+            Defaults to ['<|endoftext|>'].
 
     Returns:
         list[int]: A list of integer tokens. Each token is the UTF-8 value of a character 
-            from the regex-matched substrings, with the special token represented by 256.
-            The special token is appended after each split part, except possibly at the end 
-            if the input does not end with the special token.
-
-    Notes:
-        - The function splits the input bytes on the special token, then applies a regex 
-          to each part to extract tokens.
-        - Each regex-matched substring is converted to a sequence of UTF-8 integer values.
-        - The special token (represented by 256) is appended after each part.
-        - If the input does not end with the special token, the final 256 is removed.
+            from the regex-matched substrings, with special tokens represented by 256+index.
     """
+    if special_tokens is []:
+        raise ValueError("special_tokens must be a non-empty list")
+        
+    
+    # Use the first special token for splitting (backward compatibility)
+    split_special_token = special_tokens[0].encode('utf-8')
+    
     # split the text by the split_special_token first
     text_parts = text.split(split_special_token)
+    
+    # recurse for the next special tokens if any
+    if len(special_tokens) > 1:
+        # Spawn a thread for each part in text_parts
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            results = list(executor.map(
+            lambda part: regex_tokenize(part, special_tokens[1:], special_token_id + 1),
+            text_parts
+            ))
+        # Flatten the results
+        list_tokens = [item for sublist in results for item in sublist]
+        
+        # if text did not end with split_special_token, remove the last appended special token
+        if not text.endswith(split_special_token) and list_tokens and list_tokens[-1] == special_token_id:
+            list_tokens.pop()
+        return list_tokens
     
     PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
     pattern = re.compile(PAT)
@@ -44,45 +68,43 @@ def regex_tokenize(text: bytes, split_special_token: bytes = b'<|endoftext|>') -
     def process_part(part):
         tokens = []
         if part:
-            found_tokens = pattern.findall(part.decode('utf-8', errors='ignore'))
-            for token in found_tokens:
-                tokens.extend(ord(char) for char in token)
-        tokens.append(256)  # Always append special token after each part
+            found_token_iterator = pattern.finditer(part.decode('utf-8', errors='ignore'))
+            for token in found_token_iterator:
+                value = [ord(char) for char in token.group()]
+                tokens.extend(value)
+        tokens.append(special_token_id)  # Always append special token after each part
         return tokens
 
     # Use ThreadPoolExecutor for IO-bound (decoding) or ProcessPoolExecutor for CPU-bound (regex)
     with concurrent.futures.ThreadPoolExecutor() as executor:
         results = list(executor.map(process_part, text_parts))
     
-    # Flatten the list of lists
-    list_tokens = [item for sublist in results for item in sublist]
-    
-    # if text did not end with split_special_token, remove the last appended 256
-    if not text.endswith(split_special_token) and list_tokens and list_tokens[-1] == 256:
-        list_tokens.pop()
-    
-    # flatten the list and convert to int
-    return list_tokens
+    # if text did not end with split_special_token, remove the last appended special token
+    if not text.endswith(split_special_token) and results and results[-1][-1] == special_token_id:
+        results[-1].pop()
 
-def tokenize_chunk(file: str, split_special_token: bytes, start_end: tuple[int, int]) -> list[int]:
+    return results
+
+def tokenize_chunk(file: str, special_tokens: list[str], start_end: tuple[int, int]) -> list[list[int]]:
     start, end = start_end
     with open(file, "rb") as f:
         f.seek(start)
         chunk = f.read(end - start)
-        return regex_tokenize(chunk, split_special_token)
+        return regex_tokenize(chunk, special_tokens)
 
-def pre_tokenize(file: str | os.PathLike, num_processes: int = 4, desired_num_chunks: int = 32, special_split_token : bytes = b'<|endoftext|>') -> list[int]:
+def pre_tokenize(file: str | os.PathLike, num_processes: int = 4, desired_num_chunks: int = 32, 
+                special_split_token: bytes = b'<|endoftext|>', special_tokens: list[str] = []) -> list[list[int]]:
+    """Pre-tokenize with support for multiple special tokens"""
     # Find chunk boundaries
     with open(file, "rb") as f:
         boundaries = find_chunk_boundaries(f, desired_num_chunks, special_split_token)
     
     # Tokenize each chunk in parallel
-
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_processes) as executor:
         length = len(boundaries) - 1
         files = [file] * length
-        split_tokens = [special_split_token] * length
-        results = list(executor.map(tokenize_chunk, files, split_tokens, 
+        special_token_lists = [special_tokens] * length
+        results = list(executor.map(tokenize_chunk, files, special_token_lists, 
                                     [(boundaries[i], boundaries[i+1]) for i in range(length)]))
 
     # Flatten the list of lists

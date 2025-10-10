@@ -596,8 +596,6 @@ def run_train_bpe(
     # but the autograder will only pass the three specified arguments.
     # You can also modify the default values of these arguments.
     desired_num_chunks: int = 32
-    num_processes: int = 4
-    special_split_token: bytes = b'<|endoftext|>'
-    special_encoding = 256  # Assign ID 256 to the special token
+    num_processes: int = 32
 
     return bpe_tokenizer.bpe_tokenize(input_path, vocab_size, special_tokens, num_processes=num_processes, desired_num_chunks=desired_num_chunks)

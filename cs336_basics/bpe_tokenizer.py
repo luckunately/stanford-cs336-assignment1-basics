@@ -1,5 +1,9 @@
 import os
+import multiprocessing
+import concurrent.futures
+from collections import defaultdict
 from cs336_basics.pretokenizer import pre_tokenize
+from cs336_basics.constants import UNICODE_MAX
 
 def bpe_tokenize(
     input_path: str | os.PathLike, vocab_size: int, special_tokens: list[str], num_processes: int = 4, desired_num_chunks: int = 32
@@ -19,61 +23,127 @@ def bpe_tokenize(
     """
     # Build the initial vocabulary
     vocab = {}
-    for i in range(256):
-        vocab[i] = bytes([i])
-    # for now, only support b'<|endoftext|>'
-    assert '<|endoftext|>'in special_tokens, f"Currently only support <|endoftext|> as special token, you provided: {special_tokens}"
-    special_split_token = b'<|endoftext|>'
-    special_encoding = 256  # Assign ID 256 to the special token
     
-    vocab[special_encoding] = b'<|endoftext|>'  # Add special token
+    # Add special tokens to vocabulary
+    special_token_map = {}
+    next_id = UNICODE_MAX
+    for token in special_tokens:
+        token_bytes = token.encode('utf-8')
+        vocab[next_id] = token_bytes
+        special_token_map[token_bytes] = next_id
+        next_id += 1
 
-    initial_tokens = pre_tokenize(input_path, num_processes=num_processes, desired_num_chunks=desired_num_chunks, special_split_token=special_split_token)
+    # Get tokenized chunks as separate lists
+    token_chunks = pre_tokenize_parallel(input_path, num_processes=num_processes, 
+                                       desired_num_chunks=desired_num_chunks, 
+                                       special_tokens=special_tokens,
+                                       special_token_map=special_token_map)
 
     # Perform BPE merges
     bpe_merges = []
     while len(vocab) < vocab_size:
         # Find the most frequent pair of byte sequences
-        pairs = find_frequent_pairs(initial_tokens, vocab, num_processes=num_processes, special_encoding=special_encoding)
-        if not pairs:
+        most_frequent_pair = find_frequent_pairs_parallel(token_chunks, vocab, num_processes=num_processes, 
+                                                        special_token_map=special_token_map)
+        if not most_frequent_pair:
             break
+        
         # Merge the most frequent pair
-        merge_pair(initial_tokens, vocab, pairs[0])
-        # covert the pair of token ids to pair of byte sequences
-        bpe_merges.append((vocab[pairs[0][0]], vocab[pairs[0][1]]))
+        merge_pair_parallel(token_chunks, vocab, most_frequent_pair, num_processes=num_processes, next_id=next_id)
+        next_id += 1
+        # Convert the pair of token ids to pair of byte sequences
+        bpe_merges.append((vocab[most_frequent_pair[0]], vocab[most_frequent_pair[1]]))
 
     return vocab, bpe_merges
 
-def merge_pair(token_arrays: list[int], vocab: dict[int, bytes], pair: tuple[int, int]) -> None:
-    # Merge the pair in the token arrays and update the vocabulary
+def merge_pair_parallel(token_chunks: list[list[int]], 
+                        vocab: dict[int, bytes], 
+                        pair: tuple[int, int], 
+                        num_processes: int = 4,
+                        next_id: int = UNICODE_MAX) -> None:
+    """Merge the pair in all token chunks and update the vocabulary"""
     new_token = vocab[pair[0]] + vocab[pair[1]]
-    i = len(token_arrays) - 2
-    while i >= 0:
-        if token_arrays[i] == pair[0] and token_arrays[i + 1] == pair[1]:
-            token_arrays[i] = len(vocab)
-            del token_arrays[i + 1]
-            i -= 1
-        i -= 1
-    vocab[len(vocab)] = new_token
-    return
+    vocab[next_id] = new_token
 
-def find_frequent_pairs(token_arrays: list[int], vocab: dict[int, bytes], num_processes: int = 4, special_encoding: int = 256) -> list[tuple[int, int]]:
-    # Count the frequency of adjacent byte pairs in the vocabulary
-    pair_freq = {}
-    for i in range(len(token_arrays) - 1):
-        if token_arrays[i] == special_encoding or token_arrays[i + 1] == special_encoding:
-            continue  # Skip pairs involving the special token
-        pair = (token_arrays[i], token_arrays[i + 1])
-        if pair in pair_freq:
-            pair_freq[pair] += 1
-        else:
-            pair_freq[pair] = 1
+    def merge_chunk(chunk):
+        i = 0
+        while i < len(chunk) - 1:
+            if chunk[i] == pair[0] and chunk[i + 1] == pair[1]:
+                chunk[i] = next_id
+                del chunk[i + 1]
+            else:
+                i += 1
+        return chunk
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_processes) as executor:
+        merged_chunks = list(executor.map(merge_chunk, token_chunks))
+    
+    # Update token_chunks in place
+    token_chunks[:] = merged_chunks
 
-    # Find the most frequent pair
-    if not pair_freq:
-        return []
+def count_pairs_in_chunk(chunk: list[int]) -> dict[tuple[int, int], int]:
+    """Count pairs in a single chunk"""
+    pair_freq = defaultdict(int)
+    for i in range(len(chunk) - 1):
+        pair = (chunk[i], chunk[i + 1])
+        pair_freq[pair] += 1
+    return dict(pair_freq)
 
-    # Sort by frequency first (descending), then lexicographically (descending)
-    sorted_pairs = sorted(pair_freq.items(), key=lambda x: (-x[1], -x[0][0], -x[0][1]))
-    return [sorted_pairs[0][0]] if sorted_pairs else []
+def find_frequent_pairs_parallel(token_chunks: list[list[int]], vocab: dict[int, bytes], 
+                                num_processes: int = 4, special_token_map: dict[bytes, int] = {}) -> tuple[int, int] | None:
+    """Find the most frequent pair across all chunks using parallel processing"""
+    special_token_ids = set(special_token_map.values())
+    
+    # Count pairs in parallel
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_processes) as executor:
+        chunk_pair_counts = list(executor.map(count_pairs_in_chunk, token_chunks))
+    
+    # Merge counts from all chunks
+    total_pair_freq = defaultdict(int)
+    for pair_count in chunk_pair_counts:
+        for pair, count in pair_count.items():
+            # Skip pairs involving special tokens
+            if pair[0] in special_token_ids or pair[1] in special_token_ids:
+                continue
+            total_pair_freq[pair] += count
+    
+    if not total_pair_freq:
+        return None
+    
+    # Sort by frequency (descending), then lexicographically by byte sequences (ascending)
+    def sort_key(item):
+        try: 
+            pair, freq = item
+            if pair[0] not in vocab:
+                vocab[pair[0]] = chr(pair[0]).encode('utf-8')
+            if pair[1] not in vocab:
+                vocab[pair[1]] = chr(pair[1]).encode('utf-8')
+
+            byte_seq1 = vocab[pair[0]]
+            byte_seq2 = vocab[pair[1]]
+            return (-freq, byte_seq1, byte_seq2)
+        except KeyError:
+            return (float('inf'), b'', b'')  # Place invalid pairs at the end
+    
+    sorted_pairs = sorted(total_pair_freq.items(), key=sort_key)
+    return sorted_pairs[0][0] if sorted_pairs else None
+
+def pre_tokenize_parallel(input_path: str | os.PathLike, num_processes: int = 4, 
+                         desired_num_chunks: int = 32, special_tokens: list[str] = [],
+                         special_token_map: dict[bytes, int] = {}) -> list[list[int]]:
+    """Pre-tokenize file and return list of token chunks"""
+    if special_tokens is []:
+        special_tokens = ['<|endoftext|>']
+    
+    # Use the first special token for splitting
+    special_split_token = special_tokens[0].encode('utf-8')
+    
+    # Get flat token list from existing pre_tokenize function
+    token_chunks = pre_tokenize(input_path, num_processes=num_processes, 
+                                desired_num_chunks=desired_num_chunks, 
+                                special_split_token=special_split_token,
+                                special_tokens=special_tokens
+                                )
+    
+    return token_chunks
 
