@@ -10,6 +10,11 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from cs336_basics import bpe_tokenizer
+from cs336_basics.mytorch.linear import Linear
+from cs336_basics.mytorch.embedding import Embedding
+from cs336_basics.mytorch.RMSNorm import RMSNorm
+from cs336_basics.mytorch.activition import SiLU, SwiGLU
+from cs336_basics.mytorch.RoPE import RoPE
 
 
 def run_linear(
@@ -31,7 +36,8 @@ def run_linear(
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
 
-    raise NotImplementedError
+    my_linear = Linear(d_in, d_out, weights)
+    return my_linear(in_features)
 
 
 def run_embedding(
@@ -53,7 +59,8 @@ def run_embedding(
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
 
-    raise NotImplementedError
+    my_embedding = Embedding(vocab_size, d_model, weights)
+    return my_embedding(token_ids)
 
 
 def run_swiglu(
@@ -85,7 +92,8 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    my_swiglu = SwiGLU(d_model, d_ff, w1_weight, w2_weight, w3_weight)
+    return my_swiglu(in_features)
 
 
 def run_scaled_dot_product_attention(
@@ -202,7 +210,8 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    rope = RoPE(d_k, theta, max_seq_len)
+    return rope(in_query_or_key, token_positions)
 
 
 def run_transformer_block(
@@ -381,7 +390,8 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    my_rmsnorm = RMSNorm(d_model, eps, weights)
+    return my_rmsnorm(in_features)
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
@@ -395,7 +405,7 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    raise NotImplementedError
+    return SiLU()(in_features)
 
 
 def run_get_batch(
