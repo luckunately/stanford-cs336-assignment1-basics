@@ -4,7 +4,25 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from cs336_basics.mytorch.linear import Linear
 
+class Softmax(torch.nn.Module):
+    def __init__(self, dim: int = -1):
+        """
+        Initializes the Softmax activation function.
+        dim: int The dimension along which to apply the softmax function. Default is -1 (last dimension).
+        """
+        super().__init__()
+        self.dim = dim
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through the Softmax activation function.
+        x: torch.Tensor Input tensor of any shape
+        Returns: torch.Tensor Output tensor of the same shape as input
+        """
+        max_term = torch.max(x, dim=self.dim, keepdim=True).values
+        exp_x = torch.exp(x - max_term)
+        sum_exp_x = torch.sum(exp_x, dim=self.dim, keepdim=True)
+        return exp_x / sum_exp_x
 class SwiGLU(torch.nn.Module):
     def __init__(
         self,
