@@ -1,7 +1,4 @@
-from math import ceil
-import re
-from numpy import dtype
-from tests.conftest import mask
+import token
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
@@ -42,10 +39,10 @@ class MultiHeadAttention_with_RoPE(torch.nn.Module):
         num_heads: int,
         max_seq_len: int,
         theta: float,
-        q_proj_weight: Float[Tensor, " d_k d_in"],
-        k_proj_weight: Float[Tensor, " d_k d_in"],
-        v_proj_weight: Float[Tensor, " d_v d_in"],
-        o_proj_weight: Float[Tensor, " d_model d_v"],
+        q_proj_weight: Float[Tensor, " d_k d_in"] | None,
+        k_proj_weight: Float[Tensor, " d_k d_in"] | None,
+        v_proj_weight: Float[Tensor, " d_v d_in"] | None,
+        o_proj_weight: Float[Tensor, " d_model d_v"] | None,
     ):
         """
         d_model (int): Dimensionality of the feedforward input and output.
@@ -63,19 +60,19 @@ class MultiHeadAttention_with_RoPE(torch.nn.Module):
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
         self.d_k = d_model
         self.d_v = d_model
-        assert q_proj_weight.shape == (
+        assert q_proj_weight is None or q_proj_weight.shape == (
             self.d_k,
             d_model,
         ), f"q_proj_weight shape mismatch"
-        assert k_proj_weight.shape == (
+        assert k_proj_weight is None or k_proj_weight.shape == (
             self.d_k,
             d_model,
         ), "k_proj_weight shape mismatch"
-        assert v_proj_weight.shape == (
+        assert v_proj_weight is None or v_proj_weight.shape == (
             self.d_v,
             d_model,
         ), "v_proj_weight shape mismatch"
-        assert o_proj_weight.shape == (
+        assert o_proj_weight is None or o_proj_weight.shape == (
             d_model,
             self.d_v,
         ), "o_proj_weight shape mismatch"
@@ -84,14 +81,15 @@ class MultiHeadAttention_with_RoPE(torch.nn.Module):
         self.wv = Linear(self.d_v, d_model, weight=v_proj_weight)
         self.wo = Linear(d_model, self.d_v, weight=o_proj_weight)
         self.rope = RoPE(self.d_k // num_heads, theta, max_seq_len)
-        
+
     def forward(
         self,
-        in_features: Float[Tensor, " ... sequence_length d_in"],
+        x: Float[Tensor, " ... sequence_length d_in"],
         token_positions: Int[Tensor, " ... sequence_length"] | None = None,
-        casual_mask: bool = True) -> Float[Tensor, " ... sequence_length d_out"]:
+        casual_mask: bool = True,
+    ) -> Float[Tensor, " ... sequence_length d_out"]:
         """
-        in_features (Float[Tensor, "... sequence_length d_in"]): Tensor to run your implementation on.
+        x (Float[Tensor, "... sequence_length d_in"]): Tensor to run multi-headed attention on.
         token_positions (Int[Tensor, " ... sequence_length"] | None): Optional tensor with the positions of the tokens
         Returns:
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
@@ -99,13 +97,14 @@ class MultiHeadAttention_with_RoPE(torch.nn.Module):
         """
 
         # Linear projections
-        Q = rearrange(self.wq(in_features), " ... s (h d) -> ... h s d", h=self.num_heads)
-        K = rearrange(self.wk(in_features), " ... s (h d) -> ... h s d", h=self.num_heads)
-        V = rearrange(self.wv(in_features), " ... s (h d) -> ... h s d", h=self.num_heads)
-        
-        if token_positions is not None:
-            Q = self.rope(Q, token_positions)
-            K = self.rope(K, token_positions)
+        Q = rearrange(self.wq(x), " ... s (h d) -> ... h s d", h=self.num_heads)
+        K = rearrange(self.wk(x), " ... s (h d) -> ... h s d", h=self.num_heads)
+        V = rearrange(self.wv(x), " ... s (h d) -> ... h s d", h=self.num_heads)
+
+        if token_positions is None:
+            token_positions = torch.arange(x.shape[-2], device=x.device)
+        Q = self.rope(Q, token_positions)
+        K = self.rope(K, token_positions)
 
         if casual_mask:
             mask = torch.tril(
@@ -125,6 +124,7 @@ class MultiHeadAttention_with_RoPE(torch.nn.Module):
         output = self.wo(attn_output)
 
         return output
+
 
 class MultiHeadAttention(torch.nn.Module):
     def __init__(

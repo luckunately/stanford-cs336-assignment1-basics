@@ -4,6 +4,7 @@ import os
 from collections.abc import Iterable
 from typing import IO, Any, BinaryIO
 
+from cs336_basics.mytorch import transformer
 import numpy.typing as npt
 import torch
 from jaxtyping import Bool, Float, Int
@@ -16,7 +17,7 @@ from cs336_basics.mytorch.RMSNorm import RMSNorm
 from cs336_basics.mytorch.activition import SiLU, SwiGLU, Softmax
 from cs336_basics.mytorch.RoPE import RoPE
 from cs336_basics.mytorch.attention import MultiHeadAttention, scaled_dot_product_attention, MultiHeadAttention_with_RoPE
-
+from cs336_basics.mytorch.transformer import TransformerBlock, Transformer
 
 def run_linear(
     d_in: int,
@@ -287,7 +288,9 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    transformer_block = TransformerBlock(d_model, num_heads, d_ff, max_seq_len, theta, weights)
+
+    return transformer_block(in_features)
 
 
 def run_transformer_lm(
@@ -370,7 +373,8 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    transformer_lm = Transformer(vocab_size, context_length, d_model, num_layers, num_heads, d_ff, rope_theta, weights)
+    return transformer_lm(in_indices)
 
 
 def run_rmsnorm(

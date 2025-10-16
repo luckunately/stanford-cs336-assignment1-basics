@@ -41,6 +41,6 @@ class RMSNorm(torch.nn.Module):
         ), "Input feature dimension does not match d_model"
         in_data_type = x.dtype
         x = x.to(dtype=torch.float32)  # for numerical stability
-        rms = torch.sqrt(torch.mean(x**2, dim=-1, keepdim=True) + self.eps)
+        rms = torch.sqrt(torch.mean(torch.square(x), dim=-1, keepdim=True) + self.eps)
         x_normalized = x / rms
         return (x_normalized * self.weight).to(dtype=in_data_type)
